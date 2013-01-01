@@ -1136,10 +1136,10 @@
         this._gesture = ('gesture' in options)? options.gesture : false;
         this._squareResize = ('squareResize' in options)? options.squareResize : false;
         this._autoScroll = ('autoScroll' in options)? options.autoScroll : true;
-        this._getAction = (typeof options.actionChecker === 'function')?
+        this._getAction = (options.actionChecker instanceof Function)?
                 options.actionChecker:
-                actionCheck,
-        this._checkOnHover = ('autoScroll' in options)? options.checkOnHover : true;
+                actionCheck;
+        this._checkOnHover = ('checkOnHover' in options)? options.checkOnHover : true;
 
         events.add(this, moveEvent, mouseHover);
         events.add(this, downEvent, mouseDown, false);
