@@ -729,8 +729,6 @@
             target = interactables.get(this);
         }
 
-        mouseIsDown = true;
-
         if (target && !(dragging || resizing || gesturing)) {
 
             x0 = prevX = page.x;
@@ -743,6 +741,10 @@
             if (!action) {
                 return event;
             }
+
+            // Register that the mouse is down after succesfully validating action.
+            // This way, a new target can be gotten in the next downEvent propagation
+            mouseIsDown = true;
 
             if (styleCursor) {
                 document.documentElement.style.cursor =
