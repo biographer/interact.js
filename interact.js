@@ -8,7 +8,7 @@
  * @namespace interact.js
  * @name interact
  * @function interact
- * @param {HTMLElement | SVGElement} element The previously set document element
+ * @param {HTMLElement | svgelement} element The previously set document element
  * @returns {Interactable | null} Returns an Interactable if the element passed
  *          was previously set. Returns null otherwise.
  * @description The properties of this variable can be used to set elements as
@@ -21,9 +21,9 @@
 
 var document = window.document,
     console = window.console,
-    SVGElement = window.SVGElement,
-    SVGSVGElement = window.SVGSVGElement,
-    HTMLElement = window.HTMLElement,
+    SVGElement = window.SVGElement || blank,
+    SVGSVGElement = window.SVGSVGElement || blank,
+    HTMLElement = window.HTMLElement || window.Element,
 
     // Previous interact move event mouse/touch position
     prevX       = 0,
@@ -60,10 +60,9 @@ var document = window.document,
     prevDropTarget  = null, // the dropzone that was recently dragged away from
 
     // All things relating to autoScroll
-    scrollMargin = 70,
-    scroll = {
+    autoScroll = {
         isEnabled: true,
-        margin   : scrollMargin,
+        margin   : 60,
 
         interval : 20,      // pause in ms between each scroll pulse
         i        : null,    // the handle returned by window.setInterval
@@ -74,22 +73,22 @@ var document = window.document,
 
         // scroll the window by the values in scroll.x/y
         autoScroll: function () {
-            window.scrollBy(scroll.x, scroll.y);
+            window.scrollBy(autoScroll.x, autoScroll.y);
         },
 
         edgeMove: function (event) {
-            if (scroll.isEnabled && (dragging || resizing)) {
-                var top = event.clientY < scroll.margin,
-                    right = event.clientX > (window.innerWidth - scroll.margin),
-                    bottom = event.clientY > (window.innerHeight - scroll.margin),
-                    left = event.clientX < scroll.margin,
+            if (autoScroll.isEnabled && (dragging || resizing)) {
+                var top = event.clientY < autoScroll.margin,
+                    right = event.clientX > (window.innerWidth - autoScroll.margin),
+                    bottom = event.clientY > (window.innerHeight - autoScroll.margin),
+                    left = event.clientX < autoScroll.margin,
                     options = target.options;
 
-                scroll.x = scroll.distance * (right ? 1: left? -1: 0);
-                scroll.y = scroll.distance * (bottom? 1:  top? -1: 0);
+                autoScroll.x = autoScroll.distance * (right ? 1: left? -1: 0);
+                autoScroll.y = autoScroll.distance * (bottom? 1:  top? -1: 0);
 
-                if (!scroll.isScrolling && options.autoScroll) {
-                    scroll.start();
+                if (!autoScroll.isScrolling && options.autoScroll) {
+                    autoScroll.start();
                 }
             }
         },
@@ -97,15 +96,38 @@ var document = window.document,
         isScrolling: false,
 
         start: function () {
-            scroll.isScrolling = true;
-            window.clearInterval(scroll.i);
-            scroll.i = window.setInterval(scroll.autoScroll, scroll.interval);
+            autoScroll.isScrolling = true;
+            window.clearInterval(autoScroll.i);
+            autoScroll.i = window.setInterval(autoScroll.autoScroll, autoScroll.interval);
         },
 
         stop: function () {
-            window.clearInterval(scroll.i);
-            scroll.isScrolling = false;
+            window.clearInterval(autoScroll.i);
+            autoScroll.isScrolling = false;
         }
+    },
+
+    // aww snap
+    snap = {
+        enabled: false,
+
+        mode: 'grid',
+        range: Infinity,
+        grid: {
+            x: 100,
+            y: 100,
+            offsetX: 0,
+            offsetY: 0
+        },
+        anchors: [],
+
+        locked: false,
+        x : 0,
+        y : 0,
+        dx: 0,
+        dy: 0,
+        realX: 0,
+        realY: 0
     },
 
     // Does the browser support touch input?
@@ -119,6 +141,7 @@ var document = window.document,
     imPropStopped = false,
     gesturing     = false,
     dragging      = false,
+    dynamicDrop   = false,
     resizing      = false,
     resizeAxes    = 'xy',
 
@@ -128,27 +151,22 @@ var document = window.document,
     actions = {
         drag: {
             cursor      : 'move',
-            className   : 'interact-dragging',
             moveListener: dragMove
         },
         resizex: {
             cursor      : 'e-resize',
-            className   : 'interact-resizing',
             moveListener: resizeMove
         },
         resizey: {
             cursor      : 's-resize',
-            className   : 'interact-resizing',
             moveListener: resizeMove
         },
         resizexy: {
             cursor      : 'se-resize',
-            className   : 'interact-resizing',
             moveListener: resizeMove
         },
         gesture: {
             cursor      : '',
-            className   : 'interact-gesturing',
             moveListener: gestureMove
         }
     },
@@ -201,7 +219,12 @@ var document = window.document,
         globalBind: 2
     },
 
-   // used for adding event listeners to window and document
+    // Opera must be handled differently
+    isOperaMobile = navigator.appName == 'Opera' &&
+        supportsTouch &&
+        navigator.userAgent.match('Presto'),
+
+    // used for adding event listeners to window and document
     windowTarget = {
         _element: window,
         events  : {}
@@ -213,10 +236,11 @@ var document = window.document,
 
     // Events wrapper
     events = (function () {
-        var addEvent = ('addEventListener' in document)?
-                'addEventListener': 'attachEvent',
-            removeEvent = ('removeEventListener' in document)?
-                'removeEventListener': 'detachEvent',
+        var Event = window.Event,
+            useAttachEvent = 'attachEvent' in window && !('addEventListener' in window),
+            addEvent = !useAttachEvent?  'addEventListener': 'attachEvent',
+            removeEvent = !useAttachEvent?  'removeEventListener': 'detachEvent',
+            on = useAttachEvent? 'on': '',
             
             elements = [],
             targets  = [];
@@ -243,12 +267,25 @@ var document = window.document,
             return -1;
             };
         }
+        if (!('stopPropagation' in Event.prototype)) {
+            Event.prototype.stopPropagation = function () {
+                this.cancelBubble = true;
+            };
+            Event.prototype.stopImmediatePropagation = function () {
+                this.cancelBubble = true;
+                this.immediatePropagationStopped = true;
+            };
+        }
+        if (!('preventDefault' in Event.prototype)) {
+            Event.prototype.preventDefault = function () {
+                this.returnValue = false;
+            };
+        }
+        if (!('hasOwnProperty' in Event.prototype)) {
+            Event.prototype.hasOwnProperty = Object.prototype.hasOwnProperty;
+        }
 
         function add (element, type, listener, useCapture) {
-            if (!(element instanceof window.Element) && element !== window.document) {
-                return;
-            }
-
             var target = targets[elements.indexOf(element)];
 
             if (!target) {
@@ -260,15 +297,36 @@ var document = window.document,
                 elements.push(element);
                 targets.push(target);
             }
-            if (!target.events[type]) {
+
+            if (!(type in target.events)) {
                 target.events[type] = [];
                 target.typeCount++;
             }
 
             if (target.events[type].indexOf(listener) === -1) {
+                var ret;
+
+                if (useAttachEvent) {
+                    ret = element[addEvent](on + type, function (event) {
+                        if (!event.immediatePropagationStopped) {
+                            event.target = event.srcElement;
+                            event.currentTarget = element;
+
+                            if (event.type.match(/mouse|click/)) {
+                                event.pageX = event.clientX + document.documentElement.scrollLeft;
+                                event.pageY = event.clientY + document.documentElement.scrollTop;
+                            }
+
+                            listener(event);
+                        }
+                    }, listener, useCapture || false);
+                }
+                else {
+                    ret = element[addEvent](type, listener, useCapture || false);
+                }
                 target.events[type].push(listener);
 
-                return element[addEvent](type, listener, useCapture || false);
+                return ret;
             }
         }
 
@@ -294,7 +352,7 @@ var document = window.document,
 
                 if (listener === 'all') {
                     for (i = 0; i < len; i++) {
-                        element[removeEvent](type, target.events[type][i], useCapture || false);
+                        element[removeEvent](on + type, target.events[type][i], useCapture || false);
                     }
                     target.events[type] = null;
                     target.typeCount--;
@@ -302,7 +360,7 @@ var document = window.document,
                     for (i = 0; i < len; i++) {
                         if (target.events[type][i] === listener) {
 
-                            element[removeEvent](type, target.events[type][i], useCapture || false);
+                            element[removeEvent](on + type, target.events[type][i], useCapture || false);
                             target.events[type].splice(i, 1);
 
                             break;
@@ -327,7 +385,8 @@ var document = window.document,
             },
             remove: function (target, type, listener, useCapture) {
                 remove(target._element, type, listener, useCapture);
-            }
+            },
+            useAttachEvent: useAttachEvent
         };
     }());
 
@@ -361,8 +420,9 @@ var document = window.document,
             bottom,
             action,
             page = getPageXY(event),
-            x = page.x - window.scrollX,
-            y = page.y - window.scrollY,
+            scroll = getScrollXY(),
+            x = page.x - scroll.x,
+            y = page.y - scroll.y,
             options = target.options;
 
         clientRect = (target._element instanceof SVGElement)?
@@ -371,8 +431,8 @@ var document = window.document,
 
 
         if (actionIsEnabled.resize && options.resizeable) {
-            right = (x - clientRect.left) > (clientRect.width - margin);
-            bottom = (y - clientRect.top) > (clientRect.height - margin);
+            right  = x > (clientRect.right  - margin);
+            bottom = y > (clientRect.bottom - margin);
         }
 
         if (actionIsEnabled.gesture &&
@@ -390,6 +450,14 @@ var document = window.document,
         }
 
         return action;
+    }
+
+    function setPrevXY (event) {
+        prevX = event.pageX;
+        prevY = event.pageY;
+
+        prevClientX = event.clientX;
+        prevClientY = event.clientY;
     }
 
     // Get specified X/Y coords for mouse or event.touches[0]
@@ -413,7 +481,7 @@ var document = window.document,
         }
 
         // Opera Mobile handles the viewport and scrolling oddly
-        if (window.navigator.appName == 'Opera' && supportsTouch) {
+        if (isOperaMobile) {
             x -= window.scrollX;
             y -= window.scrollY;
         }
@@ -430,6 +498,13 @@ var document = window.document,
 
     function getClientXY (event) {
         return getXY(event, 'client');
+    }
+
+    function getScrollXY () {
+        return {
+            x: window.scrollX || document.documentElement.scrollLeft,
+            y: window.scrollY || document.documentElement.scrollTop
+        };
     }
 
     function touchAverage (event) {
@@ -515,6 +590,27 @@ var document = window.document,
         }
 
         return 180 * -Math.atan(dy / dx) / Math.PI;
+    }
+
+    function calcDropRects (dropzones) {
+        for (var i = 0, len = dropzones.length; i < len; i++) {
+            var dropzone = dropzones[i],
+                scroll = isOperaMobile?
+                    {x: 0, y: 0}:
+                    getScrollXY(),
+                clientRect = (dropzone._element instanceof SVGElement)?
+                    dropzone._element.getBoundingClientRect():
+                    dropzone._element.getClientRects()[0];
+
+            dropzone.dropRect = {
+                left  : clientRect.left   + scroll.x,
+                right : clientRect.right  + scroll.x,
+                top   : clientRect.top    + scroll.y,
+                bottom: clientRect.bottom + scroll.y,
+                width : clientRect.width,
+                height: clientRect.height
+            };
+        }
     }
 
     // Test for the dropzone element that's "above" all other qualifiers
@@ -606,6 +702,13 @@ var document = window.document,
         else {
             client = getClientXY(event);
             page = getPageXY(event);
+
+            if (snap.enabled && snap.locked) {
+                page.x += snap.dx;
+                page.y += snap.dy;
+                client.x += snap.dx;
+                client.y += snap.dy;
+            }
         }
 
         this.x0       = x0;
@@ -724,6 +827,12 @@ var document = window.document,
      * style and event Liseners
      */
     function mouseDown (event, forceAction) {
+        // document and window can't be interacted with but their Interactables
+        // can be used for binding events
+        if (!((events.useAttachEvent? event.currentTarget: this) instanceof window.Element)) {
+            return;
+        }
+
         var action = '',
             average,
             page,
@@ -751,7 +860,7 @@ var document = window.document,
         // Otherwise, set the target if the mouse is not down
         if ((event.touches && event.touches.length < 2 && !target) ||
                 !(mouseIsDown)) {
-            target = interactables.get(this);
+            target = interactables.get(events.useAttachEvent? event.currentTarget: this);
         }
 
         if (target && !(dragging || resizing || gesturing)) {
@@ -795,17 +904,121 @@ var document = window.document,
 
     function mouseMove (event) {
         if (mouseIsDown) {
-           if (x0 === prevX && y0 === prevY) { 
-               mouseWasMoved = true;
-           }
-           if (prepared && target) {
-            addClass(target._element, actions[prepared].className);
-            actions[prepared].moveListener(event);
-           }
+            if (x0 === prevX && y0 === prevY) { 
+                mouseWasMoved = true;
+            }
+            if (prepared && target) {
+
+                if (snap.enabled) {
+                    var page = getPageXY(event),
+                        inRange,
+                        anchorChanged;
+
+                    snap.realX = page.x;
+                    snap.realY = page.y;
+
+                    // change to infinite range when range is negative
+                    if (snap.range < 0) { snap.range = Infinity; }
+
+                    if (snap.mode === 'grid') {
+                        var gridx = Math.round((page.x - snap.grid.offsetX) / snap.grid.x),
+                            gridy = Math.round((page.y - snap.grid.offsetY) / snap.grid.y),
+
+                            newX = gridx * snap.grid.x + snap.grid.offsetX,
+                            newY = gridy * snap.grid.y + snap.grid.offsetY,
+
+                            distX = newX - page.x,
+                            distY = newY - page.y,
+                            
+                            distance = Math.sqrt(distX * distX + distY * distY);
+
+                        inRange = distance < snap.range;
+                        anchorChanged = (newX !== snap.x || newY !== snap.y);
+
+                        snap.x = newX;
+                        snap.y = newY;
+                        snap.dx = distX;
+                        snap.dy = distY;
+                    }
+                    else if (snap.mode === 'anchor' && snap.anchors.length) {
+                        var closest = {
+                                anchor: null,
+                                distance: 0,
+                                range: 0,
+                                distX: 0,
+                                distY: 0
+                            },
+                            distX,
+                            distY;
+
+                        for (var i = 0, len = snap.anchors.length; i < len; i++) {
+                            var anchor = snap.anchors[i],
+                                distX = anchor.x - page.x,
+                                distY = anchor.y - page.y,
+
+                                range = typeof anchor.range === 'number'? anchor.range: snap.range,
+                                distance = Math.sqrt(distX * distX + distY * distY);
+
+                            inRange = distance < range;
+
+                            // Infinite anchors count as being out of range
+                            // compared to non infinite ones that are in range
+                            if (range === Infinity && closest.inRange && closest.range !== Infinity) {
+                                inRange = false;
+                            }
+
+                            if (!closest.anchor || (inRange?
+                                // is the closest anchor in range?
+                                (closest.inRange && range !== Infinity)?
+                                    // the pointer is relatively deeper in this anchor
+                                    distance / range < closest.distance / closest.range:
+                                    //the pointer is closer to this anchor
+                                    distance < closest.distance:
+                                // The other is not in range and the pointer is closer to this anchor
+                                (!closest.inRange && distance < closest.distance))) {
+
+                                if (range === Infinity) {
+                                    inRange = true;
+                                }
+
+                                closest = {
+                                    anchor: anchor,
+                                    distance: distance,
+                                    range: range,
+                                    inRange: inRange,
+                                    distX: distX,
+                                    distY: distY
+                                };
+                            }
+                        }
+
+                        inRange = closest.inRange;
+                        anchorChanged = (closest.anchor.x !== snap.x || closest.anchor.y !== snap.y);
+
+                        snap.x = closest.anchor.x;
+                        snap.y = closest.anchor.y;
+                        snap.dx = closest.distX;
+                        snap.dy = closest.distY;
+                        snap.anchors.closest = closest.anchor;
+                    }
+
+                    if ((anchorChanged || !snap.locked) && inRange)  {
+                        snap.locked = true;
+                        actions[prepared].moveListener(event);
+                    }
+                    else if (anchorChanged || !inRange) {
+                        snap.locked = false;
+                        actions[prepared].moveListener(event);
+                    }
+                }
+                else {
+                    actions[prepared].moveListener(event);
+                }
+            }
         }
 
         if (dragging || resizing) {
-            scroll.edgeMove(event);
+            autoScroll.edgeMove(event);
         }
     }
 
@@ -820,6 +1033,10 @@ var document = window.document,
         if (!dragging) {
             dragEvent = new InteractEvent(event, 'drag', 'start');
             dragging = true;
+
+            if (!dynamicDrop) {
+                calcDropRects(dropzones);
+            }
         }
         else {
             dragEvent = new InteractEvent(event, 'drag', 'move');
@@ -868,11 +1085,7 @@ var document = window.document,
             dropTarget.fire(dragEnterEvent);
         }
 
-        prevX = dragEvent.pageX;
-        prevY = dragEvent.pageY;
-
-        prevClientX = dragEvent.clientX;
-        prevClientY = dragEvent.clientY;
+        setPrevXY(dragEvent);
     }
 
     function resizeMove (event) {
@@ -891,11 +1104,7 @@ var document = window.document,
             target.fire(resizeEvent);
         }
 
-        prevX = resizeEvent.pageX;
-        prevY = resizeEvent.pageY;
-
-        prevClientX = resizeEvent.clientX;
-        prevClientY = resizeEvent.clientY;
+        setPrevXY(resizeEvent);
     }
 
     function gestureMove (event) {
@@ -926,15 +1135,15 @@ var document = window.document,
             target.fire(gestureEvent);
         }
 
-        prevX = gestureEvent.pageX;
-        prevY = gestureEvent.pageY;
-
-        prevClientX = gestureEvent.clientX;
-        prevClientY = gestureEvent.clientY;
+        setPrevXY(gestureEvent);
 
         gesture.prevAngle = gestureEvent.angle;
         gesture.prevDistance = gestureEvent.distance;
-        if (gestureEvent.scale !== Infinity && gestureEvent.scale !== null && gestureEvent.scale !== undefined  && !isNaN(gestureEvent.scale)) {
+        if (gestureEvent.scale !== Infinity && 
+            gestureEvent.scale !== null &&
+            gestureEvent.scale !== undefined  &&
+            !isNaN(gestureEvent.scale)) {
+
             gesture.scale = gestureEvent.scale;
         }
     }
@@ -943,32 +1152,31 @@ var document = window.document,
      * @private
      * @event
      * Check what action would be performed on mouseMove target if the mouse
-     * button were pressed and change the element classes accordingly
+     * button were pressed and change the cursor accordingly
      */
     function mouseHover (event) {
-        var action,
-            options;
-
-        // Check if target element or it's parent is interactable
         if (!(mouseIsDown || dragging || resizing || gesturing) &&
-            (target = interactables.get(event.target) || interactables.get(event.target.parentNode))) {
-            options = target.options;
+            (target = interactables.get(event.target))) {
+            var options = target.options;
 
-        if ((options.resizeable || options.draggable) && options.checkOnHover) {
-            action = validateAction(options.getAction(event));
+            if (((actionIsEnabled.drag && options.draggable) ||
+                    (actionIsEnabled.resize && options.resizeable)) &&
+                options.checkOnHover) {
 
-            if (styleCursor) {
-                if (action) {
-                    target._element.style.cursor = actions[action].cursor;
-                }
-                else {
-                    target._element.style.cursor = '';
+                var action = validateAction(options.getAction(event));
+
+                if (styleCursor) {
+                    if (action) {
+                        target._element.style.cursor = actions[action].cursor;
+                    }
+                    else {
+                        target._element.style.cursor = '';
+                    }
                 }
             }
-        }
-        else if (dragging || resizing || gesturing) {
-            event.preventDefault();
-        }
+            else if (dragging || resizing || gesturing) {
+                event.preventDefault();
+            }
         }
     }
 
@@ -1028,7 +1236,7 @@ var document = window.document,
             endEvent.ds = endEvent.scale;
             target.fire(endEvent);
         }
-        else if (event.type === 'mouseup' && target && mouseIsDown && !mouseWasMoved) {
+        else if (event.type === upEvent && target && mouseIsDown && !mouseWasMoved) {
             var click = {};
 
             for (var prop in event) {
@@ -1040,7 +1248,7 @@ var document = window.document,
             target.fire(click);
         }
 
-        mouseIsDown = dragging = resizing = gesturing = false;
+        mouseIsDown = snap.locked = dragging = resizing = gesturing = false;
 
         mouseWasMoved = true;
 
@@ -1049,7 +1257,7 @@ var document = window.document,
                 document.documentElement.style.cursor = '';
                 target._element.style.cursor = '';
             }
-            scroll.stop();
+            autoScroll.stop();
             clearTargets();
 
             // prevent Default only if were previously interacting
@@ -1077,43 +1285,7 @@ var document = window.document,
         return interactables[i];
     };
 
-    function addClass (element, classNames) {
-        var i;
-
-        if (!element.classList) {
-            return false;
-        }
-
-        classNames = classNames.split(' ');
-        for (i = 0; i < classNames.length; i++) {
-            if (classNames[i] !== '') {
-                element.classList.add(classNames[i]);
-            }
-        }
-    }
-
-    function removeClass (element, classNames) {
-        var i;
-
-        if (!element.classList) {
-            return false;
-        }
-
-        classNames = classNames.split(' ');
-        for (i = 0; i < classNames.length; i++) {
-            if (classNames[i] !== '') {
-                element.classList.remove(classNames[i]);
-            }
-        }
-    }
-
     function clearTargets () {
-        if (target) {
-            removeClass(target._element, 'interact-dragging interact-resizing interact-gesturing');
-        }
-        if (dropTarget) {
-            removeClass(target._element, 'interact-droptarget');
-        }
         target = dropTarget = prevDropTarget = null;
     }
 
@@ -1163,7 +1335,6 @@ var document = window.document,
         events.add(this, downEvent, mouseDown);
 
         interactables.push(this);
-        addClass(this._element, 'interactable');
 
         this.set(options);
     }
@@ -1194,19 +1365,11 @@ var document = window.document,
                 this.options.draggable = true;
                 this.setOnEvents('drag', options);
 
-                addClass(this._element, 'interact-draggable');
-
                 return this;
             }
             if (typeof options === 'boolean') {
                 this.options.draggable = options;
 
-                if (options) {
-                    addClass(this._element, 'interact-draggable');
-                }
-                else {
-                    removeClass(this._element, 'interact-draggable interact-dragging');
-                }
                 return this;
             }
 
@@ -1229,23 +1392,27 @@ var document = window.document,
 
                 this.options.dropzone = true;
                 dropzones.push(this);
-                addClass(this._element, 'interact-dropzone');
 
+                if (!dynamicDrop) {
+                    calcDropRects([this]);
+                }
                 return this;
             }
             if (typeof options === 'boolean') {
-                if (this.options.dropzone !== options) {
-                    if (options) {
-                        dropzones.push(this);
+                if (options) {
+                    dropzones.push(this);
 
-                        addClass(this._element, 'interact-dropzone');
-                    }
-                    else {
-                        dropzones.splice(dropzones.indexOf(this), 1);
-
-                        removeClass(this._element, 'interact-dropzone');
+                    if (!dynamicDrop) {
+                        calcDropRects([this]);
                     }
                 }
+                else {
+                    var index = dropzones.indexOf(this);
+                    if (index !== -1) {
+                        dropzones.splice(index, 1);
+                    }
+                }
+
                 this.options.dropzone = options;
 
                 return this;
@@ -1264,19 +1431,32 @@ var document = window.document,
          */
         dropCheck: function (event) {
             if (target !== this) {
-                var clientRect = (this._element instanceof SVGElement)?
-                    this._element.getBoundingClientRect():
-                    this._element.getClientRects()[0],
-                horizontal,
-                vertical,
-                page = getPageXY(event),
-                x = page.x - window.scrollX,
-                y = page.y - window.scrollY;
+                var horizontal,
+                    vertical;
 
-                horizontal = (x > clientRect.left) && (x < clientRect.left + clientRect.width);
-                vertical   = (y > clientRect.top ) && (y < clientRect.top  + clientRect.height);
+                if (dynamicDrop) {
 
-                return horizontal && vertical;
+                    var clientRect = (this._element instanceof SVGElement)?
+                            this._element.getBoundingClientRect():
+                            this._element.getClientRects()[0],
+                        client = (isOperaMobile)?
+                            getPageXY(event):
+                            getClientXY(event);
+
+                    horizontal = (client.x > clientRect.left) && (client.x < clientRect.right);
+                    vertical   = (client.y > clientRect.top ) && (client.y < clientRect.bottom);
+
+
+                    return horizontal && vertical;
+                }
+                else {
+                    var page = getPageXY(event);
+
+                    horizontal = (page.x > this.dropRect.left) && (page.x < this.dropRect.right);
+                    vertical   = (page.y > this.dropRect.top ) && (page.y < this.dropRect.bottom);
+
+                    return horizontal && vertical;
+                }
             }
         },
 
@@ -1311,19 +1491,11 @@ var document = window.document,
                 this.options.resizeable = true;
                 this.setOnEvents('resize', options);
 
-                addClass(this._element, 'interact-resizeable');
-
                 return this;
             }
             if (typeof options === 'boolean') {
                 this.options.resizeable = options;
 
-                if (options) {
-                    addClass(this._element, 'interact-resizeable');
-                }
-                else {
-                    removeClass(this._element, 'interact-resizeable interact-resizing');
-                }
                 return this;
             }
             return this.options.resizeable;
@@ -1358,19 +1530,11 @@ var document = window.document,
                 this.options.gestureable = true;
                 this.setOnEvents('gesture', options);
 
-                addClass(this._element, 'interact-gestureable');
-
                 return this;
             }
             if (options !== null && options !== undefined) {
                 this.options.gestureable = options;
 
-                if (options) {
-                    addClass(this._element, 'interact-gestureable');
-                }
-                else {
-                    removeClass(this._element, 'interact-gestureable interact-gesturing');
-                }
                 return this;
             }
             return this.options.gestureable;
@@ -1378,7 +1542,7 @@ var document = window.document,
 
         /**
          * Returns or sets whether dragging and resizing near the edges of the
-         * screen will trigger autoscroll
+         * screen will trigger autoScroll
          *
          * @function
          * @param {bool} newValue
@@ -1453,6 +1617,7 @@ var document = window.document,
             var listeners,
                 fireState = 0,
                 i = 0,
+                len,
                 onEvent = 'on' + iEvent.type;
 
             // Try-catch and loop so an exception thrown from a listener
@@ -1472,7 +1637,7 @@ var document = window.document,
                             if (iEvent.type in this._iEvents) {
                             listeners = this._iEvents[iEvent.type];
 
-                            for (var len = listeners.length; i < len && !imPropStopped; i++) {
+                            for (len = listeners.length; i < len && !imPropStopped; i++) {
                                 listeners[i](iEvent);
                             }
                             break;
@@ -1485,7 +1650,7 @@ var document = window.document,
                             if (iEvent.type in globalEvents && (listeners = globalEvents[iEvent.type]))  {
                             listeners = globalEvents[iEvent.type];
 
-                            for (var len = listeners.length; i < len && !imPropStopped; i++) {
+                            for (len = listeners.length; i < len && !imPropStopped; i++) {
                                 listeners[i](iEvent);
                             }
                         }
@@ -1545,9 +1710,10 @@ var document = window.document,
          */
         unbind: function (eventType, listener, useCapture) {
             if (eventTypes.indexOf(eventType) !== -1) {
-                var index = this._iEvents[eventType].indexOf(listener);
-
-                if (index !== -1) {
+                var eventArray = this._iEvents[eventType],
+                    index;
+                    
+                if (eventArray && (index = eventArray.indexOf(listener)) !== -1) {;
                     this._iEvents[eventType].splice(index, 1);
                 }
             }
@@ -1600,7 +1766,6 @@ var document = window.document,
             this.gestureable(false);
 
             interactables.splice(interactables.indexOf(this), 1);
-            removeClass(this._element, 'interactable');
 
             return interact;
         }
@@ -1782,6 +1947,7 @@ var document = window.document,
             mouseUp             : docMouseUp,
             mouseDown           : mouseDown,
             mouseHover          : mouseHover,
+            events              : events,
             log: function () {
                 console.log('target         :  ' + target);
                 console.log('prevX, prevY   :  ' + prevX, prevY);
@@ -1844,16 +2010,64 @@ var document = window.document,
      * trigger autoScroll
      *
      * @function
-     * @param {bool} newValue
+     * @param {bool | Object} options true or false to simply enable or disable
+              or an object with options margin, distance and frequency
      * @returns {bool | interact}
      */
-    interact.enableAutoScroll = function (newValue) {
-        if (newValue !== null && newValue !== undefined) {
-            scroll.isEnabled = newValue;
+    interact.autoScroll = function (options) {
+        if (typeof options === 'object') {
+            autoScroll.isEnabled = true;
+
+            if (typeof options.margin   === 'number') { autoScroll.margin   = options.margin  ; }
+            if (typeof options.distance === 'number') { autoScroll.distance = options.distance; }
+            if (typeof options.interval === 'number') { autoScroll.interval = options.interval; }
 
             return interact;
         }
-        return scroll.isEnabled;
+        if (typeof autoScroll === 'boolean') {
+            autoScroll.isEnabled = options;
+
+            return interact;
+        }
+        return autoScroll.isEnabled;
+    };
+
+    /**
+     * Returns or sets whether actions are constrained to a grid or a 
+     * collection of coordinates
+     *
+     * @function
+     * @param {bool | Object} options true or false to simply enable or disable
+     *        or an object with properties
+     *        mode   : 'grid' or 'anchor',
+     *        range  : the distance within which snapping to a point occurs,
+     *        grid   : an object with properties
+     *                 x      : the distance between x-axis snap points,
+     *                 y      : the distance between y-axis snap points,
+     *                 offsetX: the x-axis value of the grid origin
+     *                 offsetX: the y-axis value of the grid origin
+     *        anchors: an array of objects with x, y and optional range
+     *                 eg [{x: 200, y: 300, range: 40}, {x: 5, y: 0}],
+     *        
+     * @returns {Object | interact}
+     */
+    interact.snap = function (options) {
+        if (typeof options === 'object') {
+            snap.enabled = true;
+
+            if (typeof options.mode  === 'string') { snap.mode    = options.mode;   }
+            if (typeof options.range === 'number') { snap.range   = options.range;  }
+            if (typeof options.grid  === 'object') { snap.grid    = options.grid;   }
+            if (options.anchors instanceof Array ) { snap.anchors = options.anchors;}
+
+            return interact;
+        }
+        if (typeof options === 'boolean') {
+            snap.enabled = options;
+
+            return interact;
+        }
+        return snap.enabled? snap: false;
     };
 
     /**
@@ -1876,10 +2090,40 @@ var document = window.document,
         return (dragging && 'drag') || (resizing && 'resize') || (gesturing && 'gesture') || null;
     };
 
+    /**
+     * Returns or sets wheather the dimensions of dropzone elements are
+     * calculated on every dragmove or only on dragstart for the default
+     * dropChecker
+     *
+     * @function
+     * @param {bool} newValue True to check on each move
+     * @returns {bool | @link interact}
+     */
+    interact.dynamicDrop = function (newValue) {
+        if (typeof newValue === 'boolean') {
+            if (dragging && dynamicDrop !== newValue && !newValue) {
+                calcDropRects(dropzones);
+            }
+
+            dynamicDrop = newValue;
+
+            return interact;
+        }
+        return dynamicDrop;
+    };
+
+
     events.add(docTarget,    upEvent,       docMouseUp);
     events.add(docTarget,    moveEvent,     mouseMove);
     events.add(docTarget,    'touchcancel', docMouseUp);
     events.add(windowTarget, 'blur',        docMouseUp);
+
+    // For IE's lack of preventDefault
+    events.add(docTarget,    'selectstart', function (e) {
+        if (dragging || resizing || gesturing) {
+            e.preventDefault();
+        }
+    });
 
     window.interact = interact;
 
